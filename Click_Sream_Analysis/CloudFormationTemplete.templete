@@ -1,0 +1,1846 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "Sessionization: this template creates an Amazon Kinesis Analytics application that can be used to aggregate session data and storage it to be queried by Amazon Athena.",
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "Amazon Kinesis Configuration"
+                    },
+                    "Parameters": [
+                        "StreamName",
+                        "SourceStreamSize"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Amazon S3 Destination Configuration"
+                    },
+                    "Parameters": [
+                        "S3BucketName",
+                        "S3BufferInterval",
+                        "S3BufferSize",
+                        "S3DestinationPrefix"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "Sessions based on seconds or minutes."
+                    },
+                    "Parameters": [
+                        "sessionbase"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "SourceStreamSize": {
+                    "default": "Stream Shard Count"
+                },
+                "sessionbase": {
+                    "default": "Base sessions on seconds or minutes"
+                },
+                "S3BucketName": {
+                    "default": "Bucket Name"
+                },
+                "S3BufferInterval": {
+                    "default": "Buffer Interval"
+                },
+                "S3BufferSize": {
+                    "default": "Buffer Size"
+                },
+                "S3DestinationPrefix": {
+                    "default": "Destination Prefix"
+                }
+            }
+        }
+    },
+    "Parameters": {
+        "StreamName": {
+            "Description": "Name of your New Kinesis Stream",
+            "Type": "String",
+            "Default": "sessionsclicks"
+        },
+        "SourceStreamSize": {
+            "Description": "Kinesis Stream Size",
+            "Type": "String",
+            "AllowedPattern": "[0-9]*",
+            "Default": "2"
+        },
+        "S3BucketName": {
+            "Description": "Name of the bucket to put Sessionization Data.",
+            "Type": "String",
+            "Default": "session-n-bucket-CHANGEHERE"
+        },
+        "S3DestinationPrefix": {
+            "Description": "Name of prefix where the aggregated data will be stored.",
+            "Type": "String",
+            "Default": "aggregated"
+        },
+        "sessionbase": {
+            "Description": "Sessions based on minutes (1 minute) or seconds (30 seconds).",
+            "Type": "String",
+            "Default": "minute",
+            "AllowedValues" : ["minute", "second"]
+        },
+        "S3BufferInterval": {
+            "Description": "Number of seconds to buffer data before delivering to S3 (60 to 900).",
+            "Type": "Number",
+            "Default": 60,
+            "MinValue": 60,
+            "MaxValue": 900
+        },
+        "S3BufferSize": {
+            "Description": "Number of MB of data to buffer before delivering to S3 (1 to 128).",
+            "Type": "Number",
+            "Default": 5,
+            "MinValue": 1,
+            "MaxValue": 128
+        }
+    },
+    "Mappings": {
+      "sessionlenght" : {
+      "minute"      : { "template" : "aws-bigdata-blog/artifacts/realtime-clickstream-sessions-analytics-kinesis-glue-athena/streaming-analytics-stagger-config-minutes.yaml" },
+      "second"      : { "template" : "aws-bigdata-blog/artifacts/realtime-clickstream-sessions-analytics-kinesis-glue-athena/streaming-analytics-stagger-config-seconds.yaml" }
+    }
+    },
+    "Conditions": {
+        "ConfigFileNotProvidedCondition": {
+            "Fn::Equals": [
+                {
+                    "Ref": "sessionbase"
+                },
+                ""
+            ]
+        }
+    },
+    "Resources": {
+        "SourceStream": {
+            "Type": "AWS::Kinesis::Stream",
+            "Properties": {
+                "Name": {
+                    "Ref": "StreamName"
+                },
+                "ShardCount": {
+                    "Ref": "SourceStreamSize"
+                }
+            }
+        },
+        "StreamingAnalyticsBucket": {
+          "Type" : "AWS::S3::Bucket",
+                  "Properties" : {
+                    "BucketName" : {
+                       "Ref" :  "S3BucketName"
+                     }
+                  }
+        },
+        "RawDatatoS3Policy": {
+            "Type" : "AWS::IAM::ManagedPolicy",
+            "Properties" :{
+                "ManagedPolicyName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "RawDatatoS3Policy-",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "",
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:AbortMultipartUpload",
+                                "s3:GetBucketLocation",
+                                "s3:GetObject",
+                                "s3:ListBucket",
+                                "s3:ListBucketMultipartUploads",
+                                "s3:PutObject"
+                            ],
+                            "Resource": [
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:s3:::",
+                                            {
+                                                "Ref": "StreamingAnalyticsBucket"
+                                            }
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:s3:::",
+                                            {
+                                                "Ref": "StreamingAnalyticsBucket"
+                                            },
+                                            "/*"
+                                        ]
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "kinesis:DescribeStream",
+                                "kinesis:GetShardIterator",
+                                "kinesis:GetRecords"
+                            ],
+                            "Resource": [
+                                {
+                                            "Fn::GetAtt": [
+                                                "SourceStream",
+                                                "Arn"
+                                            ]
+                                }
+                            ]
+                        },
+                        {
+                            "Sid": "",
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": [
+                                "*"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "RawDatatoS3Role": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "firehose.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ],
+                            "Condition": {
+                                "StringEquals": {
+                                    "sts:ExternalId": {
+                                        "Ref": "AWS::AccountId"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                  {
+                      "Ref": "RawDatatoS3Policy"
+                  }
+                ]
+            }
+        },
+        "RawDatatoS3": {
+            "Type": "AWS::KinesisFirehose::DeliveryStream",
+            "Properties": {
+              "DeliveryStreamType":"KinesisStreamAsSource",
+              "KinesisStreamSourceConfiguration": {
+                  "KinesisStreamARN": {
+                               "Fn::GetAtt": [
+                                        "SourceStream",
+                                        "Arn"
+                               ]
+                  },
+                  "RoleARN": {
+                    "Fn::GetAtt": [
+                             "RawDatatoS3Role",
+                             "Arn"
+                    ]
+                  }
+                },
+                "S3DestinationConfiguration": {
+                    "BucketARN": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "arn:aws:s3:::",
+                                {
+                                    "Ref": "StreamingAnalyticsBucket"
+                                }
+                            ]
+                        ]
+                    },
+                    "BufferingHints": {
+                        "IntervalInSeconds": 60,
+                        "SizeInMBs": 10
+                    },
+                    "CompressionFormat": "UNCOMPRESSED",
+                    "Prefix": "rawdata/",
+                    "RoleARN": {
+                        "Fn::GetAtt": [
+                            "RawDatatoS3Role",
+                            "Arn"
+                        ]
+                    }
+                }
+            }
+        },
+        "PersistAggDataLambdaPolicy": {
+            "Type" : "AWS::IAM::ManagedPolicy",
+            "Properties" : {
+                "ManagedPolicyName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "PersistAggDataLambdaPolicy-",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents",
+                                "cloudwatch:PutMetricData"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "kinesis:DescribeStream",
+                                "kinesis:GetShardIterator",
+                                "kinesis:GetRecords"
+                            ],
+                            "Resource": [
+                                {
+                                            "Fn::GetAtt": [
+                                                "SourceStream",
+                                                "Arn"
+                                            ]
+                                }
+                            ]
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "firehose:*"
+                            ],
+                            "Resource": [
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:firehose:",
+                                            {
+                                                "Ref": "AWS::Region"
+                                            },
+                                            ":",
+                                            {
+                                                "Ref": "AWS::AccountId"
+                                            },
+                                            ":deliverystream/",
+                                            {
+                                                "Ref": "RawDatatoS3"
+                                            }
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:firehose:",
+                                            {
+                                                "Ref": "AWS::Region"
+                                            },
+                                            ":",
+                                            {
+                                                "Ref": "AWS::AccountId"
+                                            },
+                                            ":deliverystream/",
+                                            {
+                                                "Ref": "FIrehoseToS3"
+                                            }
+                                        ]
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+        "PersistAggDataLambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                  {
+                      "Ref": "PersistAggDataLambdaPolicy"
+                  }
+                ]
+            }
+        },
+        "PersistAggDataFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                            "from __future__ import print_function",
+                            "import boto3",
+                            "import base64",
+                            "import json",
+                            "  ",
+                            "ddb = boto3.client('dynamodb')",
+                            "fh = boto3.client('firehose')",
+                            "cw = boto3.client('cloudwatch')",
+                            "  ",
+                            "  ",
+                            "def save_logs_in_cloudwatch(cw_write): ",
+                            { "Fn::Join":
+                              [
+                                "",
+                                [
+                            "    REGION='",
+                                 {
+                                        "Ref": "AWS::Region"
+                                 },
+                                 "'"
+                                ]
+                              ]
+                            },
+                            "    Unit=cw_write['parameter']",
+                            "    ValueCW=cw_write['events']",
+                            "    MetricName = cw_write['metricname']",
+                            "    response = cw.put_metric_data(",
+                            "            Namespace='sessionization',",
+                            "            MetricData=[",
+                            "                {",
+                            "                    'MetricName': MetricName,",
+                            "                    'Dimensions': [",
+                            "                        {",
+                            "                            'Name': 'region',",
+                            "                            'Value': REGION",
+                            "                        },",
+                            "                    ],",
+                            "                    'Value': ValueCW,",
+                            "                    'Unit': Unit,",
+                            "                    'StorageResolution': 1",
+                            "                },",
+                            "            ]",
+                            "    )",
+                            "",
+                            "def lambda_handler(event, context):",
+                            "  count = 0",
+                            "  for record in event['records']:",
+                            "      message = base64.b64decode(record['data'])",
+                            "      msn = json.loads(message)",
+                            "      document = {'session_id': msn['SESSION_ID'], 'user_id': msn['USER_ID'], 'device_Id': msn['DEVICE_ID'],'timeagg': msn['TIMEAGG'],",
+                            "                  'events': msn['EVENTS'],'beginnavigation': msn['BEGINNAVIGATION'],'endnavigation': msn['ENDNAVIGATION'],",
+                            "                  'beginsession' : msn['BEGINSESSION'], 'endsession' : msn['ENDSESSION'], 'duration_sec': msn['DURATION_SEC']",
+                            "      }",
+                            "      documentjson = str(document) + '\\n'",
+                                   {
+                                       "Fn::Join": [
+                                           "",
+                                           [
+                            "      fh.put_record(DeliveryStreamName='",
+                                               {
+                                                   "Ref": "FIrehoseToS3"
+                                               },
+                                               "',Record={ 'Data': documentjson})"
+                                           ]
+                                       ]
+                                   },
+
+                            "      cw_write = {",
+                            "                 'events' : msn['DURATION_SEC'],",
+                            "                 'parameter' : 'Seconds',",
+                            "                 'metricname' : 'session_duration',",
+                            "             }",
+                            "      save_logs_in_cloudwatch(cw_write)",
+                            "      cw_write = {",
+                            "                 'events' : msn['EVENTS'],",
+                            "                 'parameter' : 'None',",
+                            "                 'metricname' : 'session_events',",
+                            "             }",
+                            "      save_logs_in_cloudwatch(cw_write)",
+                            "",
+                            "      count += 1",
+                            "  return 'Processed ' + str(count) + ' items.'"
+
+                            ]
+                        ]
+                    }
+                },
+                "Description": "This function GETs and decodes raw data records from the source Kinesis stream, and batch PUTs them to a Firehose Delivery Stream",
+                "Handler": "index.lambda_handler",
+                "MemorySize": "128",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "PersistAggDataLambdaRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "python3.9",
+                "Timeout": "30"
+            }
+        },
+        "PersistAggDataTrigger": {
+            "Type": "AWS::Lambda::EventSourceMapping",
+            "Properties": {
+                "BatchSize": 1000,
+                "Enabled": "True",
+                "EventSourceArn": {
+                            "Fn::GetAtt": [
+                                "SourceStream",
+                                "Arn"
+                            ]
+                },
+                "FunctionName": {
+                    "Fn::GetAtt": [
+                        "PersistAggDataFunction",
+                        "Arn"
+                    ]
+                },
+                "StartingPosition": "LATEST"
+            }
+        },
+        "IngestionDataLambdaPolicy": {
+            "Type": "AWS::IAM::ManagedPolicy",
+            "Properties":{
+                "ManagedPolicyName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "IngestionDataLambdaPolicy-",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "kinesis:DescribeStream",
+                                "kinesis:GetShardIterator",
+                                "kinesis:GetRecords",
+                                "kinesis:PutRecords",
+                                "kinesis:PutRecord"
+                            ],
+                            "Resource": [
+                                {
+                                            "Fn::GetAtt": [
+                                                "SourceStream",
+                                                "Arn"
+                                            ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
+
+        },
+        "IngestionDataLambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    {
+                        "Ref": "IngestionDataLambdaPolicy"
+                    }
+                ]
+            }
+        },
+        "IngestionDataFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Code": {
+                    "ZipFile": {
+                        "Fn::Join": [
+                            "\n",
+                            [
+                              "import json",
+                              "import boto3",
+                              "import random",
+                              "import datetime",
+                              "",
+                              "kinesis = boto3.client('kinesis')",
+                              "def getReferrer():",
+                              "    x = random.randint(1,5)",
+                              "    x = x*50 ",
+                              "    y = x+30 ",
+                              "    data = {}",
+                              "    data['user_id'] = random.randint(x,y)",
+                              "    data['device_id'] = random.choice(['mobile','computer', 'tablet', 'mobile','computer'])",
+                              "    data['client_event'] = random.choice(['beer_vitrine_nav','beer_checkout','beer_product_detail',",
+                              "    'beer_products','beer_selection','beer_cart'])",
+                              "    now = datetime.datetime.now()",
+                              "    str_now = now.isoformat()",
+                              "    data['client_timestamp'] = str_now",
+                              "    return data",
+                              "",
+                              "def lambda_handler(event, context):",
+                              "   begining = datetime.datetime.now()",
+                              "   newtime = begining",
+                              "   while (newtime - begining).total_seconds()<55:",
+                              "        data = json.dumps(getReferrer())",
+                              "        payload = str(data)+'\\n'",
+                              "        kinesis.put_record(",
+                              {
+                                  "Fn::Join": [
+                                      "",
+                                      [
+                                        "                StreamName='",
+                                          {
+                                              "Ref": "StreamName"
+                                          },
+                                          "',"
+                                      ]
+                                  ]
+                              },
+
+
+
+                              "                Data=payload,",
+                              "                PartitionKey='partitionkey')",
+                              "        newtime = datetime.datetime.now()",
+                              "   print ('Cleaned end execution.')",
+
+                            ]
+                        ]
+                    }
+                },
+                "Description": "This function generates streaming data to kinesis streams",
+                "Handler": "index.lambda_handler",
+                "MemorySize": "128",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "IngestionDataLambdaRole",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "python3.9",
+                "Timeout": "180"
+            }
+        },
+        "FirehoseToS3Policy": {
+            "Type": "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                "ManagedPolicyName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            "FirehoseToS3Policy-",
+                            {
+                                "Ref": "AWS::StackName"
+                            }
+                        ]
+                    ]
+                },
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Sid": "",
+                            "Effect": "Allow",
+                            "Action": [
+                                "s3:AbortMultipartUpload",
+                                "s3:GetBucketLocation",
+                                "s3:GetObject",
+                                "s3:ListBucket",
+                                "s3:ListBucketMultipartUploads",
+                                "s3:PutObject"
+                            ],
+                            "Resource": [
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:s3:::",
+                                            {
+                                                "Ref": "StreamingAnalyticsBucket"
+                                            }
+                                        ]
+                                    ]
+                                },
+                                {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:s3:::",
+                                            {
+                                                "Ref": "StreamingAnalyticsBucket"
+                                            },
+                                            "/*"
+                                        ]
+                                    ]
+                                }
+                            ]
+                        },
+                        {
+                            "Sid": "",
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": [
+                                "*"
+                            ]
+                        }
+                    ]
+                }
+            }
+        },
+
+
+        "FirehoseToS3Role": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "firehose.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ],
+                            "Condition": {
+                                "StringEquals": {
+                                    "sts:ExternalId": {
+                                        "Ref": "AWS::AccountId"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    {
+                        "Ref": "FirehoseToS3Policy"
+                    }
+                ]
+            }
+        },
+        "FIrehoseToS3": {
+            "Type": "AWS::KinesisFirehose::DeliveryStream",
+            "Properties": {
+                "S3DestinationConfiguration": {
+                    "BucketARN": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "arn:aws:s3:::",
+                                {
+                                    "Ref": "StreamingAnalyticsBucket"
+                                }
+                            ]
+                        ]
+                    },
+                    "BufferingHints": {
+                        "IntervalInSeconds": {
+                            "Ref": "S3BufferInterval"
+                        },
+                        "SizeInMBs": {
+                            "Ref": "S3BufferSize"
+                        }
+                    },
+                    "CompressionFormat": "UNCOMPRESSED",
+                    "Prefix": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                {
+                                    "Ref": "S3DestinationPrefix"
+                                },
+                                "/"
+                            ]
+                        ]
+                    },
+                    "RoleARN": {
+                        "Fn::GetAtt": [
+                            "FirehoseToS3Role",
+                            "Arn"
+                        ]
+                    }
+                }
+            }
+        },
+        "LambdaRoleCreateKAPolicy": {
+            "Type": "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                          "ManagedPolicyName": {
+                              "Fn::Join": [
+                                  "",
+                                  [
+                                      "LambdaRoleCreateKAPolicy-",
+                                      {
+                                          "Ref": "AWS::StackName"
+                                      }
+                                  ]
+                              ]
+                          },
+                          "PolicyDocument": {
+                              "Version": "2012-10-17",
+                              "Statement": [
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "logs:CreateLogGroup",
+                                          "logs:CreateLogStream",
+                                          "logs:PutLogEvents"
+                                      ],
+                                      "Resource": "*"
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "kinesisanalytics:CreateApplication",
+                                          "kinesisanalytics:DeleteApplication",
+                                          "kinesisanalytics:DescribeApplication"
+                                      ],
+                                      "Resource": {
+                                          "Fn::Join": [
+                                              "",
+                                              [
+                                                  "arn:aws:kinesisanalytics:",
+                                                  {
+                                                      "Ref": "AWS::Region"
+                                                  },
+                                                  ":",
+                                                  {
+                                                      "Ref": "AWS::AccountId"
+                                                  },
+                                                  ":application/*"
+                                              ]
+                                          ]
+                                      }
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "kinesisanalytics:ListApplications"
+                                      ],
+                                      "Resource": "*"
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "cloudwatch:GetMetricStatistics"
+                                      ],
+                                      "Resource": "*"
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "s3:GetObject"
+                                      ],
+                                      "Resource": {
+                                          "Fn::Join": [
+                                              "",
+                                              [
+                                                  "arn:aws:s3:::",
+                                                  { "Fn::FindInMap" : [ "sessionlenght", { "Ref" : "sessionbase" }, "template" ]}
+                                              ]
+                                          ]
+                                      }
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "iam:PassRole"
+                                      ],
+                                      "Resource": {
+                                          "Fn::GetAtt": [
+                                              "KinesisAnalyticsRole",
+                                              "Arn"
+                                          ]
+                                      }
+                                  },
+                                  {
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "cloudformation:DescribeStacks"
+                                      ],
+                                      "Resource": {
+                                          "Ref": "AWS::StackId"
+                                      }
+                                  }
+                              ]
+                          }
+                      }
+        },
+        "LambdaRoleCreateKAApp": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "AWS": {
+                                    "Ref": "AWS::AccountId"
+                                }
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    {
+                        "Ref": "LambdaRoleCreateKAPolicy"
+                    }
+                ]
+            }
+        },
+        "KinesisAnalyticsPolicy":
+        {
+            "Type" : "AWS::IAM::ManagedPolicy",
+            "Properties": {
+                          "ManagedPolicyName": {
+                              "Fn::Join": [
+                                  "",
+                                  [
+                                      "KinesisAnalyticsPolicy-",
+                                      {
+                                          "Ref": "AWS::StackName"
+                                      }
+                                  ]
+                              ]
+                          },
+                          "PolicyDocument": {
+                              "Version": "2012-10-17",
+                              "Statement": [
+                                  {
+                                      "Sid": "ReadInputKinesis",
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "kinesis:DescribeStream",
+                                          "kinesis:GetShardIterator",
+                                          "kinesis:GetRecords"
+                                      ],
+                                      "Resource": [
+                                          {
+                                                      "Fn::GetAtt": [
+                                                          "SourceStream",
+                                                          "Arn"
+                                                      ]
+                                          }
+                                      ]
+                                  },
+                                  {
+                                      "Sid": "WriteOutputFirehose",
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "firehose:DescribeDeliveryStream",
+                                          "firehose:PutRecord",
+                                          "firehose:PutRecordBatch"
+                                      ],
+                                      "Resource": [
+                                          {
+
+
+                                                      "Fn::Join": [
+                                                          "",
+                                                          [
+                                                              "arn:aws:firehose:",
+                                                              {
+                                                                  "Ref": "AWS::Region"
+                                                              },
+                                                              ":",
+                                                              {
+                                                                  "Ref": "AWS::AccountId"
+                                                              },
+                                                              ":deliverystream/",
+                                                              {
+                                                                  "Ref": "FIrehoseToS3"
+                                                              }
+                                                          ]
+                                                      ]
+                                          },
+                                          {
+                                                      "Fn::Join": [
+                                                          "",
+                                                          [
+                                                              "arn:aws:kinesis:",
+                                                              {
+                                                                  "Ref": "AWS::Region"
+                                                              },
+                                                              ":",
+                                                              {
+                                                                  "Ref": "AWS::AccountId"
+                                                              },
+                                                              ":stream/kinesis-analytics-placeholder-stream-destination"
+                                                          ]
+                                                      ]
+                                          }
+                                      ]
+                                  },
+                                  {
+                                      "Sid": "LambdaWrite",
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "lambda:*"
+                                      ],
+                                      "Resource":{ "Fn::Join": [
+                                          "",
+                                          [
+                                              "arn:aws:lambda:",
+                                              {
+                                                  "Ref": "AWS::Region"
+                                              },
+                                              ":",
+                                              {
+                                                  "Ref": "AWS::AccountId"
+                                              },
+                                              ":function:",
+                                              {
+                                                  "Ref": "PersistAggDataFunction"
+                                              }
+                                          ]
+                                      ]
+                                     }
+                                  },
+                                  {
+                                      "Sid": "WriteOutputKinesis",
+                                      "Effect": "Allow",
+                                      "Action": [
+                                          "kinesis:DescribeStream",
+                                          "kinesis:PutRecord",
+                                          "kinesis:PutRecords"
+                                      ],
+                                      "Resource": [
+                                          {
+                                                      "Fn::Join": [
+                                                          "",
+                                                          [
+                                                              "arn:aws:kinesis:",
+                                                              {
+                                                                  "Ref": "AWS::Region"
+                                                              },
+                                                              ":",
+                                                              {
+                                                                  "Ref": "AWS::AccountId"
+                                                              },
+                                                              ":stream/kinesis-analytics-placeholder-stream-destination"
+                                                          ]
+                                                      ]
+                                                  }
+                                      ]
+                                  }
+                              ]
+                          }
+
+          }
+        },
+        "KinesisAnalyticsRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "kinesisanalytics.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    {
+                        "Ref": "KinesisAnalyticsPolicy"
+                    }
+                ]
+            }
+        },
+        "KALambdaFunction": {
+            "Type": "AWS::Lambda::Function",
+            "DependsOn": [
+                "LambdaRoleCreateKAApp"
+            ],
+            "Properties": {
+                "Code": {
+                  "S3Bucket": "aws-bigdata-blog",
+                  "S3Key": "artifacts/realtime-clickstream-sessions-analytics-kinesis-glue-athena/createapp-lambda.zip"
+                },
+                "Description": "This function configures and launches a Kinesis Analytics Application",
+                "Handler": "lambda_function.lambda_handler",
+                "MemorySize": "128",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaRoleCreateKAApp",
+                        "Arn"
+                    ]
+                },
+                "Runtime": "python3.9",
+                "Timeout": "30"
+            }
+        },
+        "CreateKAApplication": {
+            "Type": "Custom::KinesisAnalyticsApp",
+            "Properties": {
+                "ServiceToken": {
+                    "Fn::GetAtt": [
+                        "KALambdaFunction",
+                        "Arn"
+                    ]
+                },
+                "FunctionName": {"Ref": "KALambdaFunction"},
+                "Region": {"Ref": "AWS::Region"},
+                "ConfigFile": {
+                    "Fn::If": [
+                        "ConfigFileNotProvidedCondition",
+                        {
+                            "Ref": "AWS::NoValue"
+                        },
+                        { "Fn::FindInMap" : [ "sessionlenght", { "Ref" : "sessionbase" }, "template" ]}
+                    ]
+                },
+                "KAAppName": {"Fn::Join": ["", [
+                                  "AnalyticsApp-",
+                                  {"Ref": "AWS::StackName"}
+                              ]]},
+                "SourceStream": {
+                            "Fn::GetAtt": [
+                                "SourceStream",
+                                "Arn"
+                            ]
+                },
+                "KARole": {
+                    "Fn::GetAtt": [
+                        "KinesisAnalyticsRole",
+                        "Arn"
+                    ]
+                },
+                "Destination": "LambdaDest",
+                "LambdaDest": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "arn:aws:lambda:",
+                                    {
+                                        "Ref": "AWS::Region"
+                                    },
+                                    ":",
+                                    {
+                                        "Ref": "AWS::AccountId"
+                                    },
+                                    ":function:",
+                                    {
+                                        "Ref": "PersistAggDataFunction"
+                                    }
+                                ]
+                            ]
+                },
+                "StreamDest": {
+                            "Ref": "AWS::NoValue"
+                },
+                "PersistAggData": "yes",
+                "AnonymousData": "Yes"
+            }
+        },
+        "ScheduledIngestion": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+              "Description": "ScheduledRule",
+              "ScheduleExpression": "rate(1 minute)",
+              "State": "ENABLED",
+              "Targets": [{
+                "Arn": { "Fn::GetAtt": ["IngestionDataFunction", "Arn"] },
+                "Id": "TargetFunctionV1"
+              }]
+            }
+        },
+        "PermissionForEventsToInvokeLambda": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+              "FunctionName": { "Ref": "IngestionDataFunction" },
+              "Action": "lambda:InvokeFunction",
+              "Principal": "events.amazonaws.com",
+              "SourceArn": { "Fn::GetAtt": ["ScheduledIngestion", "Arn"] }
+            }
+        },
+
+        "CloudWatchDashboardforStreaming":{
+          "Type" : "AWS::CloudWatch::Dashboard",
+          "Properties" : {
+              "DashboardName" : {  "Fn::Join": [
+                    "",
+                    [
+                        "DataAnalyticsStreaming-",
+                        {
+                            "Ref": "AWS::StackName"
+                        }
+                    ]
+                ]
+              },
+              "DashboardBody" : {
+
+
+              "Fn::Join": [
+              "",
+              [
+
+
+                "{",
+                "    \"widgets\": [",
+                "        {",
+                "            \"type\": \"metric\",",
+                "            \"x\": 0,",
+                "            \"y\": 0,",
+                "            \"width\": 24,",
+                "            \"height\": 3,",
+                "            \"properties\": {",
+                "                \"metrics\": [",
+                "                    [ \"AWS/KinesisAnalytics\", \"Records\", \"Id\", \"1.1\", \"Application\",",
+                "   \"",
+                {
+                    "Fn::GetAtt": [
+                        "CreateKAApplication",
+                        "AppName"
+                    ]
+                },
+                "\", \"Flow\", \"Output\" ],",
+                "                    [ \".\", \"Bytes\", \".\", \".\", \".\", \".\", \".\", \".\" ],",
+                "                    [ \".\", \"Records\", \".\", \".\", \".\", \".\", \".\", \"Input\" ],",
+                "                    [ \".\", \"Bytes\", \".\", \".\", \".\", \".\", \".\", \".\" ]",
+                "                ],",
+                "                \"view\": \"singleValue\",",
+                "                \"region\": \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\",",
+                "                \"stat\": \"Sum\",",
+                "                \"period\": 300",
+                "            }",
+                "        },",
+                "        {",
+                "            \"type\": \"metric\",",
+                "            \"x\": 0,",
+                "            \"y\": 3,",
+                "            \"width\": 12,",
+                "            \"height\": 6,",
+                "            \"properties\": {",
+                "                \"metrics\": [",
+                "                    [ \"AWS/KinesisAnalytics\", \"Success\", \"Id\", \"1.1\", \"Application\", \"",
+                  {
+                      "Fn::GetAtt": [
+                          "CreateKAApplication",
+                          "AppName"
+                      ]
+                  },
+                "\", \"Flow\", \"Output\", { \"stat\": \"Sum\", \"yAxis\": \"left\" } ],",
+                "                    [ \".\", \"MillisBehindLatest\", \".\", \".\", \".\", \".\", \".\", \"Input\", { \"yAxis\": \"right\" } ],",
+                "                    [ \"...\", { \"stat\": \"Minimum\", \"yAxis\": \"right\" } ]",
+                "                ],",
+                "                \"view\": \"timeSeries\",",
+                "                \"stacked\": false,",
+                "                \"region\": \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\",",
+                "                \"stat\": \"Maximum\",",
+                "                \"period\": 300",
+                "            }",
+                "        }",
+                "    ]",
+                "}      ",
+
+
+
+
+
+
+
+
+
+
+
+              ]
+              ]
+             }
+
+
+
+          }
+        },
+
+        "CloudWatchDashboardSessionization":{
+          "Type" : "AWS::CloudWatch::Dashboard",
+          "Properties" : {
+              "DashboardName" : {  "Fn::Join": [
+                    "",
+                    [
+                        "Sessionization-",
+                        {
+                            "Ref": "AWS::StackName"
+                        }
+                    ]
+                ]
+              },
+              "DashboardBody" : {
+
+
+              "Fn::Join": [
+              "",
+              [
+
+                "{",
+                "\"widgets\": [{",
+                "\"type\": \"metric\",",
+                "\"x\": 0,",
+                "\"y\": 0,",
+                "\"width\": 24,",
+                "\"height\": 6,",
+                "\"properties\": {",
+                "\"metrics\": [",
+                "[\"sessionization\", \"session_duration\", \"region\", \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\", {",
+                "\"id\": \"m1\"",
+                "}]",
+                "],",
+                "\"view\": \"timeSeries\",",
+                "\"stacked\": false,",
+                "\"region\":  \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\",",
+                "\"stat\": \"Average\",",
+                "\"period\": 1",
+                "}",
+                "},",
+                "{",
+                "\"type\": \"metric\",",
+                "\"x\": 0,",
+                "\"y\": 6,",
+                "\"width\": 24,",
+                "\"height\": 6,",
+                "\"properties\": {",
+                "\"metrics\": [",
+                "[\"sessionization\", \"session_events\", \"region\", \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\", {",
+                "\"color\": \"#ff7f0e\"",
+                "}]",
+                "],",
+                "\"view\": \"timeSeries\",",
+                "\"stacked\": false,",
+                "\"region\":  \"",
+                {
+                    "Ref": "AWS::Region"
+                },
+                "\",",
+                "\"stat\": \"Average\",",
+                "\"period\": 1",
+                "}",
+                "}",
+                "]",
+                "}"
+
+
+              ]
+              ]
+             }
+
+
+
+          }
+        },
+        "SndAnDataCloudWatchRolePolicy":{
+        "Type" : "AWS::IAM::ManagedPolicy",
+        "Properties":
+                  {
+                      "ManagedPolicyName": {
+                          "Fn::Join": [
+                              "",
+                              [
+                                  "SndAnDataCloudWatchRolePolicy-",
+                                  {
+                                      "Ref": "AWS::StackName"
+                                  }
+                              ]
+                          ]
+                      },
+                      "PolicyDocument": {
+                          "Version": "2012-10-17",
+                          "Statement": [
+                              {
+                                  "Sid": "",
+                                  "Effect": "Allow",
+                                  "Action": [
+                                      "lambda:InvokeFunction"
+                                  ],
+                                  "Resource": [
+                                      {
+                                          "Fn::GetAtt": [
+                                              "KALambdaFunction",
+                                              "Arn"
+                                          ]
+                                      }
+                                  ]
+                              },
+                              {
+                                  "Sid": "",
+                                  "Effect": "Allow",
+                                  "Action": [
+                                      "logs:PutLogEvents"
+                                  ],
+                                  "Resource": [
+                                      "*"
+                                  ]
+                              }
+                          ]
+                      }
+                  }
+        },
+
+
+        "SendAnonymousDataCloudWatchRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "events.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "ManagedPolicyArns": [
+                    {
+                        "Ref": "SndAnDataCloudWatchRolePolicy"
+                    }
+                ]
+
+            }
+        },
+
+        "GlueRoleMgdPolicy":{
+        "Type" : "AWS::IAM::ManagedPolicy",
+        "Properties": {
+                            "ManagedPolicyName": {
+                                  "Fn::Join": [
+                                      "",
+                                      [
+                                          "GlueRoleMgdPolicy-",
+                                          {
+                                              "Ref": "AWS::StackName"
+                                          }
+                                      ]
+                                  ]
+                            },
+                            "PolicyDocument": {
+                                "Version": "2012-10-17",
+                                "Statement": [
+                                  {
+                                        "Effect": "Allow",
+                                        "Action": [
+                                            "glue:*",
+                                            "s3:GetBucketLocation",
+                                            "s3:ListBucket",
+                                            "s3:ListAllMyBuckets",
+                                            "s3:GetBucketAcl",
+                                            "ec2:DescribeVpcEndpoints",
+                                            "ec2:DescribeRouteTables",
+                                            "ec2:CreateNetworkInterface",
+                                            "ec2:DeleteNetworkInterface",
+                                            "ec2:DescribeNetworkInterfaces",
+                                            "ec2:DescribeSecurityGroups",
+                                            "ec2:DescribeSubnets",
+                                            "ec2:DescribeVpcAttribute",
+                                            "iam:ListRolePolicies",
+                                            "iam:GetRole",
+                                            "iam:GetRolePolicy",
+                                            "cloudwatch:PutMetricData"
+                                        ],
+                                        "Resource": [
+                                            "*"
+                                        ]
+                                    },
+                                    {
+                                        "Effect": "Allow",
+                                        "Action": [
+                                            "s3:GetObject",
+                                            "s3:PutObject",
+                                            "s3:DeleteObject"
+                                        ],
+                                        "Resource": [
+                                            "arn:aws:s3:::aws-glue-*/*",
+                                            "arn:aws:s3:::*/*aws-glue-*/*"
+                                        ]
+                                    },
+                                    {
+                                        "Effect": "Allow",
+                                        "Action": [
+                                            "s3:CreateBucket"
+                                        ],
+                                        "Resource": [
+                                            "arn:aws:s3:::aws-glue-*"
+                                        ]
+                                    },
+                                    {
+                                          "Effect": "Allow",
+                                          "Action": [
+                                              "logs:CreateLogGroup",
+                                              "logs:CreateLogStream",
+                                              "logs:PutLogEvents",
+                                              "logs:AssociateKmsKey"
+                                          ],
+                                          "Resource": [
+                                              "arn:aws:logs:*:*:/aws-glue/*"
+                                          ]
+                                      },
+                                      {
+                                          "Effect": "Allow",
+                                          "Action": [
+                                              "ec2:CreateTags",
+                                              "ec2:DeleteTags"
+                                          ],
+                                          "Condition": {
+                                              "ForAllValues:StringEquals": {
+                                                  "aws:TagKeys": [
+                                                      "aws-glue-service-resource"
+                                                  ]
+                                              }
+                                          },
+                                          "Resource": [
+                                              "arn:aws:ec2:*:*:network-interface/*",
+                                              "arn:aws:ec2:*:*:security-group/*",
+                                              "arn:aws:ec2:*:*:instance/*"
+                                          ]
+                                      },
+                                    {
+                                        "Sid": "",
+                                        "Effect": "Allow",
+                                        "Action": [
+                                            "s3:GetBucketLocation",
+                                            "s3:GetObject",
+                                            "s3:ListBucket",
+                                            "s3:PutObject"
+                                        ],
+                                        "Resource": [
+                                            {
+                                                "Fn::Join": [
+                                                    "",
+                                                    [
+                                                        "arn:aws:s3:::",
+                                                        {
+                                                            "Ref": "StreamingAnalyticsBucket"
+                                                        }
+                                                    ]
+                                                ]
+                                            },
+                                            {
+                                                "Fn::Join": [
+                                                    "",
+                                                    [
+                                                        "arn:aws:s3:::",
+                                                        {
+                                                            "Ref": "StreamingAnalyticsBucket"
+                                                        },
+                                                        "/*"
+                                                    ]
+                                                ]
+                                            }
+                                          ]
+                                        }
+                                ]
+                            }
+
+                  }
+        },
+
+        "GlueRole":{
+                    "Type": "AWS::IAM::Role",
+                    "Properties": {
+                        "AssumeRolePolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Principal": {
+                                        "Service": [
+                                            "glue.amazonaws.com"
+                                        ]
+                                    },
+                                    "Action": [
+                                        "sts:AssumeRole"
+                                    ]
+                                }
+                            ]
+                        },
+                        "Path": "/",
+                        "ManagedPolicyArns": [
+                            {
+                                "Ref": "GlueRoleMgdPolicy"
+                            }
+                        ]
+                    }
+       },
+
+
+       "GlueDatabase": {
+                    "Type": "AWS::Glue::Database",
+                    "Properties": {
+                        "CatalogId": {
+                            "Ref": "AWS::AccountId"
+                        },
+                        "DatabaseInput": {
+                            "Name": {
+                                "Fn::Join": [
+                                  "",
+                                    [
+                                        "sessions_",
+                                        {
+                                            "Ref": "AWS::StackName"
+                                        }
+                                    ]
+                                  ]
+                            },
+                            "Description": "SessionizationDatabaseDescription",
+                        }
+                    }
+       },
+
+
+       "MyCrawler": {
+           "Type": "AWS::Glue::Crawler",
+           "Properties": {
+               "Name": {
+                   "Fn::Join": [
+                         "",
+                           [
+                             "sessionization_",
+                             {
+                                 "Ref": "AWS::StackName"
+                             }
+                           ]
+                        ]
+
+               },
+               "Role": {
+                   "Fn::GetAtt": [
+                       "GlueRole",
+                       "Arn"
+                   ]
+               },
+               "DatabaseName": {
+                   "Ref": "GlueDatabase"
+               },
+               "Targets": {
+                   "S3Targets": [
+                       {
+                           "Path": {
+                               "Ref": "S3BucketName"
+                           }
+                       }
+                   ]
+               },
+               "SchemaChangePolicy": {
+                   "UpdateBehavior": "UPDATE_IN_DATABASE",
+                   "DeleteBehavior": "DELETE_FROM_DATABASE"
+               },
+               "Schedule": {
+                   "ScheduleExpression": "cron(0 * * * ? *)"
+               }
+           }
+       },
+
+
+
+
+
+
+
+
+        "SendAnonymousMetricsTrigger": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "Invokes the KALambdaFunction every 15 minutes to collect and send anonymous metrics on solution usage to AWS.",
+                "Name": {
+                    "Fn::Join": [
+                        "",[
+                            {"Fn::GetAtt": ["CreateKAApplication","AppName"]},
+                            "-metrics"]]},
+                "ScheduleExpression": "rate(15 minutes)",
+                "RoleArn": {
+                    "Fn::GetAtt": [
+                        "SendAnonymousDataCloudWatchRole",
+                        "Arn"
+                    ]
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "KALambdaFunction",
+                                "Arn"
+                            ]
+                        },
+                        "Id": {
+                            "Ref": "KALambdaFunction"
+                        },
+                        "Input": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    "{\"RequestType\" :\"SendAnonymousMetrics\",\"AppName\":\"",
+                                    {
+                                        "Fn::GetAtt": [
+                                            "CreateKAApplication",
+                                            "AppName"
+                                        ]
+                                    },
+                                    "\",\"uuid\":\"",
+                                    {
+                                        "Fn::GetAtt": [
+                                            "CreateKAApplication",
+                                            "UUID"
+                                        ]
+                                    },
+                                    "\"}"
+                                ]
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    "Outputs": {
+        "SourceStream": {
+            "Description": "Stream your data to this Amazon Kinesis Stream",
+            "Value": {
+
+                        "Ref": "SourceStream"
+                    }
+        },
+        "Application": {
+            "Description": "Validate and start this Amazon Kinesis Analytics Application",
+            "Value": {
+                "Fn::GetAtt": [
+                    "CreateKAApplication",
+                    "AppName"
+                ]
+            }
+        },
+        "SolutionBucket": {
+            "Description": "Data will be stored in this Amazon S3 bucket",
+            "Value": {
+                "Ref": "StreamingAnalyticsBucket"
+            }
+        },
+
+        "UUID": {
+            "Description": "UUID of the soln",
+            "Value": {
+                "Fn::GetAtt": [
+                    "CreateKAApplication",
+                    "UUID"
+                ]
+            }
+        }
+    }
+}
